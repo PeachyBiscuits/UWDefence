@@ -1,0 +1,127 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <opencv2/opencv.hpp>
+
+// Define constants
+#define TARGET_DISTANCE_THRESHOLD 3.0
+#define PROPORTIONAL_GAIN 0.1
+
+// Drone state
+struct Drone {
+    double x;           // Drone's x-coordinate
+    double y;           // Drone's y-coordinate
+    double heading;     // Drone's heading (in radians)
+    double speed;       // Drone's speed
+};
+
+// Function to calculate distance between two points
+double calculateDistance(double x1, double y1, double x2, double y2) {
+    return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
+}
+
+// Function to update drone's position and heading based on guidance
+void updateDrone(struct Drone *drone, double targetX, double targetY) {
+    // Calculate angle to target
+    double angleToTarget = atan2(targetY - drone->y, targetX - drone->x);
+
+    // Calculate distance to target
+    double distanceToTarget = calculateDistance(drone->x, drone->y, targetX, targetY);
+
+    // Calculate heading error
+    double headingError = angleToTarget - drone->heading;
+
+    // Proportional control to adjust heading and speed
+    drone->heading += PROPORTIONAL_GAIN * headingError;
+    drone->speed = distanceToTarget; // Adjust speed to close in on the target
+}
+
+// Function to process camera feed and identify target
+int identifyTarget(cv::Mat frame, double *targetX, double *targetY) {
+    // Convert frame to grayscale
+    cv::Mat gray;
+    cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+
+    // Apply threshold to find target (assuming the target is a bright object)
+    cv::Mat thresh;
+    cv::threshold(gray, thresh, 200, 255, cv::THRESH_BINARY);
+
+    // Find contours of the thresholded image
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(thresh, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    // Assume the largest contour is the target
+    if (contours.size() > 0) {
+        size_t largestContourIndex = 0;
+        double largestArea = 0;
+
+        for (size_t i = 0; i < contours.size(); i++) {
+            double area = cv::contourArea(contours[i]);
+            if (area > largestArea) {
+                largestArea = area;
+                largestContourIndex = i;
+            }
+        }
+
+        // Get the center of the target
+        cv::Moments m = cv::moments(contours[largestContourIndex]);
+        *targetX = m.m10 / m.m00;
+        *targetY = m.m01 / m.m00;
+
+        return 1; // Target identified
+    }
+
+    return 0; // Target not identified
+}
+
+int main() {
+    struct Drone chaser = {0.0, 0.0, 0.0, 1.0};  // Initial position, heading, and speed of the chaser
+
+    // Open the default camera
+    cv::VideoCapture cap(0);
+    if (!cap.isOpened()) {
+        fprintf(stderr, "Error: Could not open camera\n");
+        return -1;
+    }
+
+    // Main loop
+    while (1) {
+        cv::Mat frame;
+        cap >> frame;
+
+        if (frame.empty()) {
+            fprintf(stderr, "Error: Could not capture frame\n");
+            break;
+        }
+
+        double targetX, targetY;
+        if (identifyTarget(frame, &targetX, &targetY)) {
+            // Update drone based on target position
+            updateDrone(&chaser, targetX, targetY);
+
+            // Print drone information (for testing)
+            printf("Chaser: x=%.2f, y=%.2f, heading=%.2f, speed=%.2f\n",
+                   chaser.x, chaser.y, chaser.heading, chaser.speed);
+
+            // Check for interception
+            if (calculateDistance(chaser.x, chaser.y, targetX, targetY) < TARGET_DISTANCE_THRESHOLD) {
+                printf("Interception successful!\n");
+                break;
+            }
+        } else {
+            printf("Target not identified\n");
+        }
+
+        // Display the frame (for testing)
+        cv::imshow("Frame", frame);
+        if (cv::waitKey(30) >= 0) break;
+
+        // Add simulation delay (adjust as needed)
+        usleep(100000); // 100ms delay
+    }
+
+    // Release the camera
+    cap.release();
+
+    return 0;
+}
